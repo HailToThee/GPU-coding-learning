@@ -1,8 +1,7 @@
 import os
 import torch
 from torch.utils.cpp_extension import load_inline
-import torch.profiler as profiler
-
+from torch.profiler import profile, record_function, ProfilerActivity
 os.environ['TORCH_EXTENSIONS_DIR'] = './'
 cuda_begin = r'''
 #include <torch/extension.h>
