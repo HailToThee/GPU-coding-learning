@@ -26,5 +26,56 @@ GPU工作流程：
   - 64 INT32 cores
   - 8 Tensor cores
   - 128KB memory_block for L1 cache and Shared memory  
-    （0–96KB for Shared memory, 96–128KB for L1 cache）
-  - 65536 registers
+
+    （default 0–96KB for Shared memory, 96–128KB for L1 cache）
+    
+    Shared memroy is **private** for block.
+
+  - 65536 registers.
+
+    Threads' function is to read the value of register memory which is obtained from global memory or shared memory implicitly. 
+
+    所以如果在block里面的线程所访问的数据复用性不高，那么使用shared memory的意义并不是很大
+
+Global_memory is large and shared by all SMs.
+
+## Shared memory and bank
+shared memory被组织成了多个可以并行访问的bank， 可理解为独立的存储单元， 每个bank可以独立地进行读写操作。
+
+一般来说shared memoery = 96kB = 32 * 4B = 32 bank。 存储时0, 32, 64 ... 被映射到同一个bank。
+### shared memory 读数
+每个thread在shared memory中读数是自由的，可以读取任何位置， 例如thread0， 可以读取任意bank的任意行。 一个warp中的线程读数无限制， 可以读取相同的数据，也可以读取的数据均在同一个bank上。
+
+### Bank conflict
+一个warp中的线程发生了访问同一个bank不同数据的情况， 导致warp读取数据耗时延长。
+### 广播
+warp中的线程读取同一个数据， 对应bank只需读取一次数据后广播道所需的线程中。
+
+## Shared memory usage
+1. **静态申请**
+```cpp
+constexpr int W = 16;
+constexpr int H = 16;
+__global__ void g2s(int *origin){
+  __shared__ int smem[H][W];
+}
+```
+2. shared memory的数据是先让线程从global memory进行导入，读取完之后线程使用对应数据时就可以从shared memory中访问了
+```cpp
+int tx = threadIdx.x;
+int ty = threadIdx.y;
+smem[ty][tx] = origin[ty * W + tx];//orgin指向数据在global memory的位置
+```
+3. **shared memory的动态内存申请**
+```cpp 
+__global__ void g2s()
+{
+    extern __shared__ char shared_bytes[];
+}
+int main()
+{
+  //smem_size: 申请大小
+    g2s<<<grid, block, smem_size>>>()
+}
+```
+
