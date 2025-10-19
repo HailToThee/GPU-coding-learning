@@ -97,7 +97,7 @@ with torch.profiler.profile(
 
     record_shapes=True,
     profile_memory=True,
-    with_stack=True,
+    # with_stack=True,
     with_flops=True,
     with_modules=True
 ) as prof:
