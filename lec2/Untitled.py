@@ -74,7 +74,7 @@ __global__ void kernel(int M, int N, int K, float alpha, const float* A, const f
             #pragma unroll
             float tmpB = Bs[k * BN + threadCol];
             for (int t = 0; t < TM; ++t) {
-                tmp[t] += As[threadRow * BK + k] * tmpB;
+                tmp[t] += As[(threadRow * TM + t) * BK + k] * tmpB;
             }
         }
 
