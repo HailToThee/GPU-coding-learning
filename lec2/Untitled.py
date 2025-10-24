@@ -16,32 +16,52 @@ cuda_begin = r'''
 '''
 
 cuda_kernel = r'''
+/*
+The cuda kernel is defined within a block. Manually, we define block size and grid size.
+So when we defined the blocksize within each grid, we can get the row and column of block we are operating on.
+So cRow and cCol are defined as blockIdx.x and blockIdx.y respectively.
+Writing a kernel, the first step is to seperate the Block and Grid. 
+Once we know our Block and grid, we can locate the pointer to A, B, C matrix.
+
+each block is responsible for computing a BM x BN sub-matrix of C.
+inside each block, load A:BM*BK and B:BK*BN into shared memory in loops.
+each thread computes a TM x 1 sub-matrix of C. using register to store.
+write back to global memory after all K is done.
+*/
+
 template<const int BM, const int BN, const int BK, const int TM>
 __global__ void kernel(int M, int N, int K, float alpha, const float* A, const float* B,
                        float beta, float* C) {
+    
     const uint cRow = blockIdx.x;
     const uint cCol = blockIdx.y;
     __shared__ float As[BM*BK];
     __shared__ float Bs[BK*BN];
-    const float* A_tile = A + cRow*K;
-    const float* B_tile = B + cCol;
-    // Note: C_tile is not used in write-back; we compute global address directly
+
+    const float* A_tile = A + cRow*K*BM;
+    const float* B_tile = B + cCol*BN;
+    float* C_tile = C + cRow*BM*N + cCol*BN;
+
+    const uint threadRow = threadIdx.x / BK;    // ThreadRow and ThreadCol is the target position of each element
+    const uint threadCol = threadIdx.x % BK;
+
     const int innerColA = threadIdx.x % BK;
     const int innerRowA = threadIdx.x / BK;
     const int innerColB = threadIdx.x % BN;
     const int innerRowB = threadIdx.x / BN;
+
     float tmp[TM] = {0.0f};
     for (int idx = 0; idx < K; idx += BK) {
         // Load A to shared memory
         if (innerRowA < BM && innerColA < BK && (idx + innerColA) < K) {
-            As[innerRowA * BK + innerColA] = A_tile[innerRowA * K + innerColA];
+            As[innerRowA * BK + innerColA] = A_tile[innerRowA * K + innerColA + idx];
         } else {
             As[innerRowA * BK + innerColA] = 0.0f;
         }
 
         // Load B to shared memory
         if (innerRowB < BK && innerColB < BN && (idx + innerRowB) < K) {
-            Bs[innerRowB * BN + innerColB] = B_tile[innerRowB * N + innerColB];
+            Bs[innerRowB * BN + innerColB] = B_tile[(idx + innerRowB) * N + innerColB];
         } else {
             Bs[innerRowB * BN + innerColB] = 0.0f;
         }
@@ -52,31 +72,21 @@ __global__ void kernel(int M, int N, int K, float alpha, const float* A, const f
         #pragma unroll
         for (int k = 0; k < BK; ++k) {
             #pragma unroll
+            float tmpB = Bs[k * BN + threadCol];
             for (int t = 0; t < TM; ++t) {
-                const int row = innerRowA;
-                const int col = t * blockDim.x + threadIdx.x;
-                if (row < BM && col < BN) {
-                    tmp[t] += As[row * BK + k] * Bs[k * BN + col % BN];
-                }
+                tmp[t] += As[threadRow * BK + k] * tmpB;
             }
         }
 
         __syncthreads();
-        A_tile += BK;
-        B_tile += BK * N;
     }
 
     // Write back
     #pragma unroll
-    for (int t = 0; t < TM; ++t) {
-        const int row = innerRowA;
-        const int col = t * blockDim.x + threadIdx.x;
-        if (row < BM && col < BN) {
-            int global_row = cRow * BM + row;
-            int global_col = cCol * BN + col;
-            if (global_row < M && global_col < N) {
-                C[global_row * N + global_col] = alpha * tmp[t] + beta * C[global_row * N + global_col];
-            }
+    for (int i = 0; i < TM; ++i) {
+        if (cRow * BM + threadRow * TM + i < M && cCol * BN + threadCol < N) {
+            C_tile[(threadRow * TM + i) * N + threadCol] =
+                alpha * tmp[i] + beta * C_tile[(threadRow * TM + i) * N + threadCol];
         }
     }
 }
@@ -120,7 +130,7 @@ def check():
     C_ref = C.clone()
 
     alpha = 1.0
-    beta = 1.0
+    beta = 0.0
 
     with profile(record_shapes=True, profile_memory=True, with_stack=True) as prof:
         # ❌ 错误：kernel_wrapper(M, N, K, alpha, A, B, beta, C)
